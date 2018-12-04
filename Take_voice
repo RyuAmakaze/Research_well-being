@@ -1,0 +1,152 @@
+#coding:utf-8
+import wave
+import time
+import struct
+import numpy as np
+from pylab import *
+
+def sinc(x):
+    if x == 0.0: return 1.0
+    else: return np.sin(x) / x
+
+#FFTをかけると共に描画
+def fft(x, fs):
+    start = 0
+    N = 16000    # FFTのサンプル数
+
+    # 最低、N点ないとFFTできないので0.0を追加
+    for i in range(N): x.append(0.0)
+
+    X = np.fft.fft(x[start:start+N])
+    freqList = np.fft.fftfreq(N, d=1.0/fs)
+
+    amplitudeSpectrum = [np.sqrt(c.real ** 2 + c.imag ** 2) for c in X]
+
+    # 波形を描画
+    subplot(211)
+    plot(range(start, start+N), x[start:start+N])
+    axis([start, start+N, -0.5, 0.5])
+    xlabel("time [sample]")
+    ylabel("amplitude")
+
+    # 振幅スペクトルを描画
+    subplot(212)
+    n = len(freqList) // 2  # FFTの結果は半分まで見ればOK
+    plot(freqList[:n], amplitudeSpectrum[:n], linestyle='-')
+    axis([0, fs/2, 0, 2])
+    xlabel("frequency [Hz]")
+    ylabel("amplitude spectrum")
+
+    show()
+
+def createBPF(fe1, fe2, delta):
+    """バンドパスフィルタを設計、fe1:エッジ周波数（低）、fe2:エッジ周波数（高）
+    delta:遷移帯域幅"""
+    # 遷移帯域幅を満たすフィルタ係数の数を計算
+    # N+1が奇数になるように調整が必要
+    N = round(3.1 / delta) - 1
+    if (N + 1) % 2 == 0: N += 1
+    N = int(N)
+
+    # フィルタ係数を求める
+    b = []
+    for i in range(-N//2, N//2 + 1):
+        b.append(2 * fe2 * sinc(2 * math.pi * fe2 * i) - 2 * fe1 * sinc(2 * math.pi * fe1 * i))
+
+    # ハニング窓をかける（窓関数法）
+    hanningWindow = np.hanning(N + 1)
+    for i in range(len(b)):
+        b[i] *= hanningWindow[i]
+
+    return b
+
+def fir(x, b):
+    """FIRフィルタをかける、x:入力信号、b:フィルタ係数"""
+    y = [0.0] * len(x)  # フィルタの出力信号
+    N = len(b) - 1      # フィルタ係数の数
+    for n in range(len(x)):
+        for i in range(N+1):
+            if n - i >= 0:
+                y[n] += b[i] * x[n - i]
+    print("filtering was completed")
+    return y
+
+def save(data, fs, bit, filename):
+    """波形データをWAVEファイルへ出力"""
+    wf = wave.open(filename, "w")
+    wf.setnchannels(1)
+    wf.setsampwidth(bit // 8)
+    wf.setframerate(fs)
+    wf.writeframes(data)
+    wf.close()
+
+
+#1/10秒音があるなら
+def judge(y,n,samf):
+    dB = 30 #閾値[dB]
+    v = 2*(0.0001)*math.exp(dB/20)#閾値[v]
+    sig = 0 #シグマの略ってことで
+    sample = samf//10 #1/10sのサンプル数
+    for i in range(sample):
+        sig += abs(y[n+i])
+    if(sig >= v*sample): #1/50秒後までの振幅の相加平均が閾値vより大きいならture
+        return 1 
+    else:
+        return 0
+
+#0.1秒先まで声があるなら1を返す
+def judge2(y,n,samf):
+    dB = 1 #閾値[dB]
+    v = 2*(0.0001)*math.exp(dB/20)#閾値[v] マイクのゲインによる　0.4とかならいいのか、ていうか雑音大杉問題
+    #print("v is ")
+    #print(v)
+    sig = 0
+    sample = samf//5 #1/2sのサンプル数
+    for i in range(sample):
+        if(n+i>=len(y)):
+          break
+        sig += abs(y[n+i])
+    #print("sig is "+str(sig))
+    #print("v*sample is "+str(v*sample))
+    if(sig >= v*sample): #1/2秒後までの振幅の相加平均が閾値vより小さいならture
+        return 1 
+    else:
+        return 0
+
+#何dB以上の音を取り出す
+#fsはmainにある変数で対象の音楽のサンプリング周波数
+def TakeVoice(y,fs,samf,name):
+    number = 1
+    n = 0
+    print(name + " flame sum is  " + str(len(y)))
+    while(n <= len(y) - samf//2):
+        i = 0
+        if judge(y,n,samf)==1:
+            print("")
+            print("start n is "+str(n))
+            while(judge2(y,n+i,samf)==1):
+                i = i + 1
+            print("frames length is "+ str(i))
+            print("extract time is "+ str(i/samf)+"[sec]")
+            print("world time is "+str(n//samf)+"[sec] from start")
+            
+            if(i/samf<=0.2): #0.2秒以下の独り言は独り言ではもはやないっていうね
+                print("extract sound is too short! Break")
+                print(" ")   
+            
+            else:
+                z = [0.0] * (i+1)
+                #print(z)
+
+                for j in range(i):
+                    z[j] =  y[n+j]
+
+                z = [int(k* 32767.0) for k in z]
+                z = struct.pack("h" * len(z), *z)
+
+                save(z, samf, 16, name+"_"+str(number)+".wav")
+                print(name+"_"+str(number)+".wav"+" is saved")
+                number = number + 1
+        n = n + 1 + i
+    print("The work to extract sound was completed from" + name)
+    print("-------------------------------------------------------------------------------")
